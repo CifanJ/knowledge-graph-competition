@@ -1,201 +1,174 @@
 import streamlit as st
-import json
 import requests
-from streamlit_agraph import agraph, Node, Edge, Config
+import json
 
-# ===================== 页面基础配置 =====================
+# 页面基础配置
 st.set_page_config(page_title="基于AIGC的课程知识图谱智能构建与学习导航系统", layout="wide")
 
-# ===================== 初始化会话状态 =====================
-if "login_status" not in st.session_state:
-    st.session_state.login_status = False
-if "user_role" not in st.session_state:
-    st.session_state.user_role = None
-if "username" not in st.session_state:
-    st.session_state.username = ""
-if "course_list" not in st.session_state:
-    st.session_state.course_list = []
-# 用户库，存在session_state
-if "user_db" not in st.session_state:
-    st.session_state.user_db = [
-        {"phone": "13800138000", "pwd": "teacher123", "role": "teacher", "name": "张老师"},
-        {"phone": "13800138001", "pwd": "student123", "role": "student", "name": "小明同学"}
-    ]
+# 初始化会话状态
+if "login" not in st.session_state:
+    st.session_state.login = False
+if "role" not in st.session_state:
+    st.session_state.role = None
+if "user_phone" not in st.session_state:
+    st.session_state.user_phone = None
+if "student_list" not in st.session_state:
+    st.session_state.student_list = []
+if "graph_data" not in st.session_state:
+    st.session_state.graph_data = None
 
-# ===================== DeepSeek API配置（从Secrets读取） =====================
-DEEPSEEK_API_KEY = st.secrets["DEEPSEEK_KEY"]
+# DeepSeek API配置
+DEEPSEEK_API_KEY = "sk-4f4c99f734fa410ebe0da47608f43dcb"
 DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
 
-# ===================== DeepSeek：知识图谱生成 =====================
-def generate_kg_by_deepseek(text):
-    prompt = f"""
-你是课程知识抽取专家，请从下面课程文本提取知识点，输出严格JSON格式，不要多余文字。
-要求：
-1. nodes数组：每个元素{{"id":数字,"name":"知识点名称"}}
-2. edges数组：每个元素{{"source":起点id,"target":终点id,"relation":"关系，一般为前置知识点"}}
-3. 知识点之间梳理前置依赖关系。
-课程文本：
-{text}
-只返回JSON，不要任何解释。
-"""
-    headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": "deepseek-chat",
-        "messages": [{"role":"user","content":prompt}],
-        "temperature":0.2
-    }
-    resp = requests.post(DEEPSEEK_URL, headers=headers, json=payload, timeout=60)
-    res_json = resp.json()
-    content = res_json["choices"][0]["message"]["content"]
-    kg_data = json.loads(content)
-    return kg_data
-
-# ===================== 图谱可视化转换函数 =====================
-def render_kg_graph(kg_json):
-    nodes = []
-    edges = []
-    for n in kg_json["nodes"]:
-        nodes.append(Node(id=str(n["id"]), label=n["name"], size=25, color="#4285F4"))
-    for e in kg_json["edges"]:
-        edges.append(Edge(source=str(e["source"]), target=str(e["target"]), label=e["relation"], color="#888888"))
-    config = Config(width=1000, height=400, directed=True, physics=True, hierarchical=False)
-    return agraph(nodes=nodes, edges=edges, config=config)
-
-# ===================== 登录页面 =====================
+# ---------------- 登录页面 ----------------
 def login_page():
     st.title("📱 用户登录")
-    st.markdown("手机号 + 密码登录系统")
-    phone_input = st.text_input("手机号", placeholder="13800138000")
-    pwd_input = st.text_input("密码", type="password", placeholder="输入密码")
-    if st.button("登录", type="primary"):
-        match_user = None
-        for u in st.session_state.user_db:
-            if u["phone"] == phone_input and u["pwd"] == pwd_input:
-                match_user = u
-                break
-        if match_user:
-            st.session_state.login_status = True
-            st.session_state.user_role = match_user["role"]
-            st.session_state.username = match_user["name"]
-            st.success("✅ 登录成功！")
+    st.subheader("手机号 + 密码登录系统")
+    phone = st.text_input("手机号")
+    pwd = st.text_input("密码", type="password")
+    if st.button("登录"):
+        # 内置账号
+        if phone == "13800138000" and pwd == "teacher123":
+            st.session_state.login = True
+            st.session_state.role = "teacher"
+            st.session_state.user_phone = phone
             st.rerun()
         else:
-            st.error("❌ 手机号或密码错误")
+            # 匹配学生列表
+            find_stu = False
+            for s in st.session_state.student_list:
+                if s["phone"] == phone and s["pwd"] == pwd:
+                    st.session_state.login = True
+                    st.session_state.role = "student"
+                    st.session_state.user_phone = phone
+                    find_stu = True
+                    st.rerun()
+            if not find_stu:
+                st.error("手机号或密码错误！")
 
-# ===================== 教师端页面 =====================
-def teacher_page():
-    st.title("基于AIGC的课程知识图谱智能构建与学习导航系统")
-    st.markdown(f"👋 欢迎你，{st.session_state.username}（教师端）")
-    logout_btn = st.button("退出登录")
-    if logout_btn:
-        st.session_state.login_status = False
-        st.session_state.user_role = None
-        st.rerun()
+# ---------------- 教师模块 ----------------
+def teacher_manage_student():
+    st.header("👥 学生账号管理")
     st.divider()
-
-    tab1, tab2 = st.tabs(["课程图谱管理", "学生账号管理"])
-
-    # Tab1：课程图谱管理
-    with tab1:
-        st.subheader("📚 历史课程管理")
-        if len(st.session_state.course_list) == 0:
-            st.info("暂无课程，请粘贴课程讲义，调用DeepSeek生成知识图谱")
-        else:
-            for idx, course in enumerate(st.session_state.course_list):
-                with st.expander(f"{course['name']}"):
-                    st.write("### 知识图谱可视化")
-                    render_kg_graph(course["graph"])
-                    st.write("### 图谱原始JSON数据")
-                    st.json(course["graph"])
-
-        st.divider()
-        st.subheader("✨ DeepSeek AIGC生成新课程知识图谱")
-        course_name = st.text_input("输入课程名称", value="高等数学")
-        course_text = st.text_area("粘贴课程讲义/知识点文本", height=200,
-            value="高等数学包含极限、导数、积分三大核心模块。\n极限是导数的前置知识点；导数是不定积分的前置知识点；不定积分是定积分的前置知识点。\n极限：研究自变量趋近某值时函数的变化趋势。\n导数：函数在一点处的瞬时变化率。\n不定积分：导数的逆运算。\n定积分：曲边梯形面积计算。")
-
-        if st.button("🤖 AIGC生成知识图谱", type="primary"):
-            with st.spinner("正在调用DeepSeek抽取知识点，生成图谱..."):
-                kg_data = generate_kg_by_deepseek(course_text)
-                new_course = {"name":course_name, "content":course_text, "graph":kg_data}
-                st.session_state.course_list.append(new_course)
-                st.success("✅ 知识图谱生成成功！下方可查看可视化图谱")
-                render_kg_graph(kg_data)
-
-    # Tab2：学生账号管理：新增学生 + 修改学生密码
-    with tab2:
-        st.subheader("➕ 新增学生账号（教师注册学生）")
-        new_stu_name = st.text_input("学生姓名", key="new_stu_name")
-        new_stu_phone = st.text_input("学生手机号", key="new_stu_phone")
-        new_stu_pwd = st.text_input("学生初始密码", key="new_stu_pwd")
-        if st.button("添加学生账号", type="primary"):
-            # 判断手机号是否已经存在
-            exist = False
-            for u in st.session_state.user_db:
-                if u["phone"] == new_stu_phone:
-                    exist = True
-                    break
-            if exist:
-                st.error("❌ 该手机号账号已存在！")
-            elif len(new_stu_phone)!=11 or not new_stu_phone.isdigit():
-                st.error("❌ 手机号格式错误！")
-            elif new_stu_name.strip() == "" or new_stu_pwd.strip() == "":
-                st.error("❌ 姓名和密码不能为空！")
+    with st.form("add_student"):
+        s_phone = st.text_input("学生手机号")
+        s_pwd = st.text_input("学生密码")
+        s_name = st.text_input("学生姓名")
+        sub = st.form_submit_button("添加学生账号")
+        if sub:
+            exists = any(item["phone"] == s_phone for item in st.session_state.student_list)
+            if exists:
+                st.warning("该手机号学生账号已存在")
             else:
-                # 添加学生账号
-                new_student = {
-                    "phone": new_stu_phone,
-                    "pwd": new_stu_pwd,
-                    "role": "student",
-                    "name": new_stu_name
-                }
-                st.session_state.user_db.append(new_student)
-                st.success(f"✅ 学生【{new_stu_name}】注册成功，学生可以使用该手机号+密码登录！")
-
-        st.divider()
-        st.subheader("👨‍🎓 已有学生账号列表（可修改密码）")
-        student_list = [u for u in st.session_state.user_db if u["role"] == "student"]
-        if len(student_list) ==0:
-            st.info("暂无学生账号，请在上方新增学生")
-        else:
-            for stu in student_list:
-                with st.expander(f"学生：{stu['name']} | 手机号：{stu['phone']}"):
-                    update_pwd = st.text_input("修改密码", value=stu["pwd"], key=stu["phone"])
-                    if st.button("保存密码", key=f"save_{stu['phone']}"):
-                        for u in st.session_state.user_db:
-                            if u["phone"] == stu["phone"]:
-                                u["pwd"] = update_pwd
-                                break
-                        st.success(f"✅ {stu['name']} 的密码已更新！")
-
-# ===================== 学生端页面 =====================
-def student_page():
-    st.title("基于AIGC的课程知识图谱智能构建与学习导航系统")
-    st.markdown(f"👋 欢迎你，{st.session_state.username}（学生端）")
-    logout_btn = st.button("退出登录")
-    if logout_btn:
-        st.session_state.login_status = False
-        st.session_state.user_role = None
-        st.rerun()
-    st.divider()
-    st.subheader("📖 课程学习导航")
-    if len(st.session_state.course_list) == 0:
-        st.info("暂无课程，请等待教师创建课程知识图谱")
+                st.session_state.student_list.append({"phone":s_phone,"pwd":s_pwd,"name":s_name})
+                st.success("添加成功！")
+    st.subheader("学生列表")
+    if len(st.session_state.student_list) ==0:
+        st.info("暂无学生账号")
     else:
-        for idx, course in enumerate(st.session_state.course_list):
-            with st.expander(f"📘 {course['name']} - 学习路径推荐"):
-                st.write("🎯 可视化知识图谱（按前置关系规划学习顺序）")
-                render_kg_graph(course["graph"])
-                st.info("💡 学习提示：顺着箭头方向学习，先掌握前置知识点，再学习后续知识点")
+        st.table(st.session_state.student_list)
 
-# ===================== 主入口 =====================
-if not st.session_state.login_status:
+def teacher_build_graph():
+    st.header("🧠 AIGC课程知识图谱生成")
+    st.divider()
+    course_text = st.text_area("粘贴课程文本内容", height=250, placeholder="例如：高等数学包含极限、导数；导数由极限定义，微分和导数密切相关")
+    if st.button("一键生成知识图谱"):
+        with st.spinner("大模型正在抽取知识点与关系..."):
+            prompt = f"""
+你是知识图谱抽取专家。从下面课程文本提取【实体】和【实体之间的关系】，输出JSON格式：
+{{"nodes":[{"id":"节点ID","name":"知识点名称"}],"edges":[{"source":"起点ID","target":"终点ID","label":"关系描述"}]}}
+课程内容：{course_text}
+只返回JSON，不要多余文字。
+"""
+            headers = {"Authorization":f"Bearer {DEEPSEEK_API_KEY}", "Content-Type":"application/json"}
+            payload = {
+                "model":"deepseek-chat",
+                "messages":[{"role":"user","content":prompt}],
+                "temperature":0.3
+            }
+            resp = requests.post(DEEPSEEK_URL, headers=headers, data=json.dumps(payload))
+            res_json = resp.json()
+            content = res_json["choices"][0]["message"]["content"]
+            graph = json.loads(content)
+            st.session_state.graph_data = graph
+        st.success("图谱生成完成！")
+        st.subheader("图谱节点")
+        st.write(graph["nodes"])
+        st.subheader("关系连线")
+        st.write(graph["edges"])
+        st.info("答辩演示：节点代表知识点，连线代表依赖关系，学生可以顺着关系得到学习导航")
+
+# ---------------- 学生模块 ----------------
+def student_view_graph():
+    st.header("📖 课程知识图谱查看")
+    st.divider()
+    if st.session_state.graph_data is None:
+        st.warning("暂无教师生成的课程知识图谱，请等待教师创建！")
+    else:
+        st.subheader("知识点图谱信息")
+        st.write(st.session_state.graph_data)
+
+def student_learn_nav():
+    st.header("🧭 智能学习导航")
+    st.divider()
+    if st.session_state.graph_data is None:
+        st.warning("暂无图谱，无法生成学习路径")
+    else:
+        st.markdown("""
+### 学习顺序建议
+1. 优先学习没有前置依赖的基础知识点
+2. 再学习有前置要求的进阶知识点
+> 本系统创新点：AIGC自动识别知识点依赖关系，自动规划学习路线，不用人工标注
+""")
+
+# ---------------- 主逻辑 侧边栏导航 ----------------
+if not st.session_state.login:
     login_page()
 else:
-    if st.session_state.user_role == "teacher":
-        teacher_page()
-    elif st.session_state.user_role == "student":
-        student_page()
+    # ==========侧边栏菜单==========
+    with st.sidebar:
+        st.title("📚 系统导航")
+        st.divider()
+        if st.session_state.role == "teacher":
+            menu = st.radio("功能菜单", [
+                "🏠 教师首页",
+                "👥 学生账号管理",
+                "🧠 AIGC知识图谱生成",
+                "🚪 退出登录"
+            ])
+        else:
+            menu = st.radio("功能菜单", [
+                "🏠 学生首页",
+                "📖 课程知识图谱查看",
+                "🧭 学习导航",
+                "🚪 退出登录"
+            ])
+        st.divider()
+        st.caption("金扬智能｜AIGC课程知识图谱系统")
+
+    # 页面内容
+    if menu == "🚪 退出登录":
+        st.session_state.login = False
+        st.session_state.role = None
+        st.rerun()
+    elif menu == "🏠 教师首页":
+        st.title("欢迎教师使用系统")
+        st.markdown("""
+### 系统简介
+本系统面向教学场景，基于AIGC自动构建课程知识图谱
+✅ 学生账号管理
+✅ 课程文本一键生成知识图谱
+✅ 自动提取知识点和依赖关系
+        """)
+    elif menu == "👥 学生账号管理":
+        teacher_manage_student()
+    elif menu == "🧠 AIGC知识图谱生成":
+        teacher_build_graph()
+    elif menu == "🏠 学生首页":
+        st.title("欢迎同学使用学习导航系统")
+        st.markdown("查看课程知识图谱，获取AI推荐学习顺序")
+    elif menu == "📖 课程知识图谱查看":
+        student_view_graph()
+    elif menu == "🧭 学习导航":
+        student_learn_nav()
